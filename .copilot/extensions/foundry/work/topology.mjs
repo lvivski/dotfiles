@@ -23,6 +23,7 @@ export function topology(links) {
 				active.add(dep);stack.push({id:dep,edges:needs(dep),i:0});
 			}
 		}
+		return complete;
 	}
 	return {validate,
 		/** @param {Iterable<string>} seeds */

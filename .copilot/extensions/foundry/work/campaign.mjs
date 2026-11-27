@@ -1,18 +1,17 @@
 import { boundChange, checkReceipt, failedComponent, productPin } from "./evidence.mjs";
 import { carriedInput, publishedComponent } from "./publication.mjs";
+import { memberApproval, stoppedMembers } from "./receipt.mjs";
 import { batchMembers } from "./abi.mjs";
+import { activeApproval, approvedOrder, approvalId } from "./approved.mjs";
+import { memberBasis } from "./series.mjs";
 import { outside } from "./product.mjs";
-import { contains, digest } from "./values.mjs";
+import { digest, within } from "./values.mjs";
+export { within } from "./values.mjs";
 import { correctionRefs, matchesDraft } from "./drafts.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").NativeCall} Check */
 /** @typedef {import("./model.js").Adoption} Offer */
-/** @param {import("./model.js").Inspection["scope"]} scope @param {string} path */
-export function within(scope,path){
-	const match=(/** @type {{directories:string[];files:string[]}} */ s)=>s.files.includes(path)||s.directories.some(d=>contains(d,path));
-	return match(scope) && !(scope.exclude && match(scope.exclude));
-}
 /** Each touched path has at most one included owner after exclusions. Rebind every
  * consumer of a replaced pin, including a consumer with unchanged output bytes.
  * @param {import("./model.js").HarnessRollout["included"]} included @param {import("./model.js").HarnessRollout["files"]} files @param {string[]} [previous] */
@@ -46,7 +45,12 @@ export function corroborated(run,join,checkpoint,id,old,scope){
  * The terminal observation remains in the ledger and the proof, never in the pass set.
  * @param {Run} run @param {Offer} a */
 export function rolloutSlots(run,a){
-	const attempts=run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && e.rollout===a.id);
+	const attempts=run.effects.filter(/** @returns {e is Check} */ e=>e.kind==="component" && memberApproval(e)===a.id);
+	if(attempts.some(c=>c.attempt?.version===3)){
+		const translated=approvedOrder(run,a);
+		const checks=translated?.checks??[];
+		return {attempts,calls:checks,checks};
+	}
 	const calls=batchMembers(attempts);
 	const retry=a.foreground && calls.find(c=>c.id===a.foreground?.retry);
 	const patched=calls.filter(c=>c.testPin);
@@ -84,9 +88,7 @@ export function rolloutPaths(run,a){
 /** Verify the serial cut: only signed passes before the signed stop; no later call issued.
  * @param {Run} run @param {Offer} a @param {string} id @param {boolean} withdrawn @param {boolean} [allowPass] */
 export function stoppedBatch(run,a,id,withdrawn,allowPass=false){
-	const {checks:batch}=rolloutSlots(run,a),pos=batch.findIndex(c=>c.id===id);
-	if(pos>=0 && batch.every((c,i)=>i<=pos ? c.runnerClaim && (i<pos?checkReceipt(c)?.exit===0:[1,2,...allowPass?[0]:[]].includes(checkReceipt(c)?.exit??-1)) :
-		c.state===(withdrawn?"withdrawn":"ready") && !c.callId && !c.runnerStarted && !c.receipt && !c.permissionHold))return batch;
+	return stoppedMembers(rolloutSlots(run,a).checks,id,withdrawn,allowPass);
 }
 
 /** Compose the two independently approved manifests, not just their path names.
@@ -110,15 +112,11 @@ export function currentRollout(run,c){
 	const {offer,join}=b;
 	return !successor(run,offer) && join.commit===b.offer.rollout.from && productPin(run)===offer.revision?offer:undefined;
 }
-/** @param {string} grain @param {import("./model.js").HarnessRollout} r */
-const basis=(grain,r)=>({base:r.from,generation:r.from,scope:r.owners[grain].scope,
-	task:`Review ${grain} on the exact harness rollout ${r.blob} from ${r.followup?.assembly??r.from}.`+
-		(r.followup?` Review the cumulative output against ${r.from}; the earlier rollout was not published.`:"")+
-		` Preserve all behavior assertions; check the new dependency pins.`});
 /** @param {Run} run @param {Check} c */
 export function rolloutInspection(run,c){
-	const r=currentRollout(run,c)?.rollout;
-	if(r && c.grain)return {node:run.nodes[c.grain],overrides:basis(c.grain,r)};
+	const id=approvalId(c),a=id?run.adoptions?.find(a=>a.id===id):undefined;
+	const r=a?(activeApproval(run,c,a)?a.rollout:undefined):currentRollout(run,c)?.rollout;
+	if(r && c.grain)return {node:run.nodes[c.grain],overrides:memberBasis(c.grain,r)};
 }
 
 /** Check historical authority against the original stopped join, never an old node's current state.
@@ -143,7 +141,7 @@ export function validRollout(run,a,prior,effects,p){
 		if(!old || parent?.decision?.status!=="answered" || parent.assembly!==f.assembly || parent.failed!==a.failed ||
 			parent.revision!==a.revision || a.assembly===parent.assembly || !f.files.length || digest(old.included)!==digest(r.included) ||
 			approved && (successor(run,parent)!==a || !stoppedBatch(run,parent,f.check,true,f.observation===0)) ||
-			stop?.kind!=="component" || !stop.grain || stop.rollout!==parent.id || !stop.runnerClaim ||
+			stop?.kind!=="component" || !stop.grain || memberApproval(stop)!==parent.id || !stop.runnerClaim ||
 			(f.observation===undefined?![1,2].includes(exit??-1):f.observation!==exit) ||
 			f.observation===0 && !correctionRefs(run).some(ref=>ref.assembly===f.assembly && ref.blob===r.blob && ref.draft?.id===r.draft && ref.base===a.revision) ||
 			calls.some(c=>run.effects.indexOf(c)<=run.effects.indexOf(stop)))return false;
@@ -191,7 +189,7 @@ export function validRollout(run,a,prior,effects,p){
 		const i=run.inspections?.find(i=>i.component===c.id);
 		if(i && (i.base!==r.from || i.generation!==r.from || i.issuer!==run.owner ||
 			(i.specification!==undefined || o.specification!==undefined) && i.specification!==spec ||
-			i.task!==basis(id,r).task || digest(i.scope)!==digest(o.scope)))return false;
+			i.task!==memberBasis(id,r).task || digest(i.scope)!==digest(o.scope)))return false;
 		if(step && (!publishedComponent(run,c.id,id,c.commit) ||
 			run.effects.findIndex(e=>e.id===step.recheck)<=run.effects.indexOf(c)))return false;
 	}

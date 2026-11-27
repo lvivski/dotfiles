@@ -7,7 +7,7 @@ import {git,put} from "../test/fixture.mjs";
 import {api,fixture,noGap,propose,readFile,run,source,worker} from "../test/release.mjs";
 import {activate} from "./activity.mjs";
 import {transition} from "./machine.mjs";
-import {openDatabase} from "./database.mjs";
+import {ledgerPath,openDatabase} from "./database.mjs";
 import {advance,newRun} from "./graph.mjs";
 import {reportReceiver} from "./reports.mjs";
 import {scheduling} from "./scheduling.mjs";
@@ -82,15 +82,15 @@ test("a stopped pass does not even sample Git; an unavailable target or pending 
 	}
 });
 
-/** @param {ReturnType<typeof fixture>} f @param {Run[]} samples @returns {ReturnType<typeof fixture>["execute"]} */
-const sampling=(f,samples)=>async(tool,args,id)=>{
+/** @param {ReturnType<typeof fixture>} f @param {Run[]} samples @param {(file:string)=>void} [capture] @returns {ReturnType<typeof fixture>["execute"]} */
+const sampling=(f,samples,capture)=>async(tool,args,id)=>{
 	const result=await f.execute(tool,args,id);
 	if (tool==="bash") {
 		const db=openDatabase(f.root);
 		try {
 			const draft=db.read(run), e=draft?.effects.find(e=>e.args.shellId===args.shellId);
 			assert.ok(draft && e?.tool==="bash" && e.receipt);
-			db.verifySigned(run,e);samples.push(draft);
+			db.verifySigned(run,e);if(!samples.length)capture?.(db.file);samples.push(draft);
 		} finally {db.close();}
 	}
 	return result;
@@ -121,7 +121,14 @@ async function reported(draft,job,report) {
 test("a real pass reserves writers before surveys, records a demonstrated stall, and checks a Git assembly without qualifying it",async t=>{
 	const f=fixture(t,["producer"],'has("producer/ready")',6);
 	/** @type {Run[]} */ const samples=[];
-	const execute=sampling(f,samples);
+	const forkFile=path.join(path.dirname(ledgerPath(f.root)),"planning.sqlite");
+	const execute=sampling(f,samples,file=>{
+		// Copy the actual ledger and spool before the first runner returns to its issuer.
+		for(const suffix of ["",".outcomes"]){
+			const src=new DatabaseSync(file+suffix,{readOnly:true});
+			try{src.prepare("VACUUM INTO ?").run(forkFile+suffix);}finally{src.close();}
+		}
+	});
 	await f.start(f.runtime(f.root,{execute}));
 	const [gap]=samples,[job]=f.scouts,db=openDatabase(f.root);t.after(()=>db.close());
 	assert.ok(gap && job);
@@ -139,10 +146,8 @@ test("a real pass reserves writers before surveys, records a demonstrated stall,
 	assert.deepEqual(db.read(run),reading,"tracing a private plan does not commit it");
 
 	// Force one real stale CAS. Its speculative reservation must disappear on the paused reread.
-	const fork=openDatabase(f.root,path.join(path.dirname(db.file),"planning.sqlite"),true);t.after(()=>fork.close());
-	const originalSpool=new DatabaseSync(db.file+".outcomes");
-	try{originalSpool.prepare("VACUUM INTO ?").run(fork.file+".outcomes");}finally{originalSpool.close();}
-	fork.insert(gap);
+	const fork=openDatabase(f.root,forkFile);t.after(()=>fork.close());
+	assert.deepEqual(fork.read(run),gap);
 	/** @type {string[][]} */ const attempts=[];
 	fork.planAndSwap(run,r=>{
 		attempts.push(trace(f.root,r).actions);

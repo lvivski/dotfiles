@@ -1,6 +1,7 @@
 import { offered } from "./artifacts.mjs";
 import { materialize } from "./reference.mjs";
 import { sharedBlockers } from "./routing.mjs";
+import { rolloutSlots } from "./campaign.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { changedFrom, inconclusiveRepair, launcherFailure, missingInput, productPin, relinquishable } from "./evidence.mjs";
 import { handoff, portableProof } from "./handoff.mjs";
@@ -53,8 +54,12 @@ function ownerStatus(run, { receipts, questions, summary }, detail,evidence,cwd)
 		scheduling: scheduling(run),
 		sharedBlockers: sharedBlockers(run, remainingAssignments(run),cwd),
 		...(rollout && {harnessRollout:{check:rollout.failed,from:rollout.rollout?.from,assembly:rollout.assembly,blob:rollout.rollout?.blob,
-			harness:rollout.rollout?.harness,...(rollout.rollout?.followup && {followup:rollout.rollout.followup}),...(rollout.foreground && {foreground:rollout.foreground}),checks:run.effects.flatMap(e=>e.kind==="component" && e.rollout===rollout.id ?
-				[{grain:e.grain,id:e.id,state:e.state,exit:receipts.get(e.id)?.exit,reason:replacementStop(run,e)??e.permissionHold??e.error}]:[])}}),
+			harness:rollout.rollout?.harness,...(rollout.rollout?.followup && {followup:rollout.rollout.followup}),...(rollout.foreground && {foreground:rollout.foreground}),
+			checks:rolloutSlots(run,rollout).attempts.map(e=>{
+				const review=inspectionAt(run,e.id),reason=replacementStop(run,e)??review?.permissionHold??review?.summary??e.permissionHold??e.error;
+				return {grain:e.grain,id:e.id,state:e.state,exit:receipts.get(e.id)?.exit,...(review && {review:review.id,reviewState:review.state}),
+					reason:review?.state==="changes"?`${reason} The finding grants no writer access. A separately authorized correction and approval of its exact bytes are required.`:reason};
+			})}}),
 		...(correction && {outputCorrection:{proposal:correction.replacement,grain:correction.grain,candidate:correction.commit,
 			component:correction.id,state:correction.state,exit:correction.receipt?.exit,review:inspection?.id,reviewState:inspection?.state,
 			reason:replacementStop(run,correction)??inspection?.permissionHold??inspection?.summary??correction.permissionHold??correction.error}}),

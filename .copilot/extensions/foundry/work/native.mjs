@@ -1,11 +1,13 @@
 import { currentCheck } from "./eligibility.mjs";
+import { approvalId } from "./approved.mjs";
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
 import { disabledRoute, journal, messageTo, survey, unissued } from "./dispatch.mjs";
 import { unownedBlockers } from "./routing.mjs";
 import { currentInstruction } from "./instructions.mjs";
 import { remainingAssignments } from "./capacity.mjs";
-import { closureExit, runnerArgs, runnerRun } from "./abi.mjs";
+import { runnerArgs, runnerRun, supportedNewCall } from "./abi.mjs";
+import { historical } from "./historical.mjs";
 import { productPin, qualifiedProduct } from "./evidence.mjs";
 import { contractHold } from "./contract.mjs";
 import { targetsWriter } from "./lineage.mjs";
@@ -64,12 +66,12 @@ export function restaff(n,generation){
 export function reserveWorker(run, issuer, token, base, brief, agent, grain, reuse, observer,production) {
 	const id = randomUUID();
 	const restoration=!observer && !production && run.nodes[grain]?.restoration;
-	run.effects.push({ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}), ...(observer && {observer}), ...(production && {production}),
+	/** @type {import("./model.js").NativeCall} */ const writer={ id, issuer, token, state: "ready", kind: "writer", grain, ...(reuse ? {reuse} : {}), ...(restoration && {restoration}), ...(observer && {observer}), ...(production && {production}),
 		tool: "create_session", args: {
 			name: `${grain.slice(0, 22)} ${token.slice(0, 8)}`, workspace_type: "worktree", base_branch: base,
 			coordinate_with_creator: true, notify_on_idle: "once", kickoff: { mode: "autopilot", prompt: `${marker(run.id, token)}\n${brief}`, ...(agent ? { agent } : {}) }
-		} });
-	return id;
+		} };
+	run.effects.push(writer);return writer;
 }
 
 /** @typedef {{kind:"product"|"goal"} | {kind:"component",grain:string} |
@@ -82,7 +84,7 @@ export function reserveCheck(run, issuer, cwd, commit, check, role, reports) {
 	const evaluatorRevision = kind === "goal" ? run.repins?.at(-1)?.revision : kind === "product" ? productPin(run) : undefined;
 	const productEvaluatorRevision = kind === "goal" && productPin(run);
 	const label="grain" in role?role.grain:kind==="goal"?"final goal":"joined product";
-	/** @type {import("./model.js").NativeCall & {attempt:{version:2,previous?:string}}} */
+	/** @type {import("./model.js").NativeCall} */
 	const effect={id,issuer,...role,state:"ready",tool:"bash",attempt:{version:2},commit,check,...reports,
 		...(evaluatorRevision && {evaluatorRevision}),...(productEvaluatorRevision && {productEvaluatorRevision}),
 		args:runnerArgs(cwd,run.id,id,`Check ${label} at ${commit.slice(0,12)}`.slice(0,100))};
@@ -109,7 +111,7 @@ function assignee(run, e) {
 }
 
 /** @param {Run} run @param {Effect} e @param {string} [cwd] */
-export function current(run, e, cwd) {
+export function current(run, e,cwd) {
 	if (e.tool === "bash") return currentCheck(run, e);
 	if (e.state === "retired" || e.state === "withdrawn") return false;
 	if(e.kind==="instruction")return currentInstruction(run,e);
@@ -151,13 +153,13 @@ export function boundWriter(run, actor, token) {
 /** A final handoff may notify its owner after goal acceptance. It cannot authorize work.
  * @param {Run} run @param {Effect} e @param {string} [cwd] */
 const eligible = (run, e,cwd) => !contractHold(run) &&
-	(run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run, e,cwd);
+	(run.active && !expired(run) || e.kind === "handoff" && !!run.goal) && current(run,e,cwd);
 /** @param {Run} run @param {Effect} e @param {string} [cwd] */
-export const canDispatch=(run,e,cwd)=>!(e.tool==="bash" && e.attempt?.version===1) && eligible(run,e,cwd);
+export const canDispatch=(run,e,cwd)=>supportedNewCall(e) && eligible(run,e,cwd);
 /** A historic local hold may be sampled and cleared by the original issuer.
  * That exposes a potential successor to planning, never the old call to dispatch.
  * @param {Run} run @param {Effect} e @param {string} [cwd] */
-export const policySubject=(run,e,cwd)=>e.tool==="bash" && e.attempt?.version===1?e.state==="ready" && !!e.permissionHold && eligible(run,e,cwd):canDispatch(run,e,cwd);
+export const policySubject=(run,e,cwd)=>historical(e)?e.state==="ready" && !!e.permissionHold && eligible(run,e,cwd):canDispatch(run,e,cwd);
 
 /** Only an unclaimed create from a finished issuer can move. An ordinary/manual
  * call has already visited a native route, even if it has no worker ID yet.
@@ -172,12 +174,12 @@ export function transferableWriter(run, e) {
  * @param {Run} run @param {Effect} expected @param {string} callId @param {string} [cwd] */
 export function issue(run, expected, callId,cwd) {
 	const e = (expected.kind==="instruction"?run.instructions:run.effects)?.find(e => e.id === expected.id);
-	if (!e || e.issuer !== expected.issuer || e.state !== expected.state || e.tool !== expected.tool ||
+	if (!e || !supportedNewCall(e) || e.issuer !== expected.issuer || e.state !== expected.state || e.tool !== expected.tool ||
 		digest(e.args) !== digest(expected.args)) return false;
 	if (e.state === "issued") {
-		return e.callId===callId && (e.tool==="bash"?current(run,e,cwd):canDispatch(run,e,cwd)); // An already-issued runner may finish through a pause.
+		return e.callId===callId && (e.tool==="bash"?current(run,e,cwd):canDispatch(run,e,cwd));
 	}
-	if (!canDispatch(run, e,cwd) || e.permissionHold || !unissued(e)) return false;
+	if (!canDispatch(run,e,cwd) || e.permissionHold || !unissued(e)) return false;
 	const event=/** @type {const} */ ({type:"issue",callId:text(callId,"original call ID")});
 	if (e.kind==="scout") survey(e,event); else journal(e,event);
 	return true;
@@ -185,7 +187,8 @@ export function issue(run, expected, callId,cwd) {
 
 /** @param {Run} run @param {import("./model.js").NativeCall} e @param {string} reason */
 function block(run, e, reason) {
-	if (e.kind==="instruction" || e.kind === "artifact" || e.kind === "rerun" || e.kind==="control" || e.delivery || e.replacement || e.rollout || !current(run, e))
+	if (e.kind==="instruction" || e.kind === "artifact" || e.kind === "rerun" || e.kind==="control" || e.delivery || e.replacement || e.rollout ||
+		e.kind==="component" && approvalId(e) || !current(run, e))
 		return;
 	const n = assignee(run, e);
 	const prior=e.production?.prior ?? e.input?.prior ?? e.baselineStop;
@@ -215,6 +218,7 @@ function workerId(value, name) {
 
 /** @param {Run} run @param {import("./model.js").NativeCall} e @param {unknown} raw @param {boolean} automatic */
 export function receive(run, e, raw, automatic) {
+	if(historical(e))fail("native_unconfirmed","Historical checks require the original signed outcome or authenticated closed-call settlement");
 	const value = record(raw);
 	if (automatic && value.resultType === "failure" && value.error === "This session management tool is disabled" &&
 		!value.structuredContent && !value.textResultForLlm && (e.tool === "create_session" || e.tool === "send_session_message")) {
@@ -238,11 +242,6 @@ export function receive(run, e, raw, automatic) {
 	else if (e.tool === "bash") {
 		const telemetry = record(value.toolTelemetry ?? {}), properties = record(telemetry.properties ?? {});
 		const exit = record(telemetry.metrics ?? {}).exit_code;
-		if(e.attempt?.version===1 && !e.runnerStarted){
-			if(e.attempt.closure!=="closed-before-runner-claim" || exit!==closureExit || properties.executionMode!=="sync" || properties.shell_error_category!=="command_nonzero_exit")
-				fail("native_unconfirmed","Await the original closed-before-runner-claim shell settlement");
-			journal(e,"confirm");return;
-		}
 		if (!e.runnerStarted && !e.runnerClaim && !e.receipt && properties.executionMode === "sync" && properties.shell_error_category === "command_nonzero_exit" &&
 			typeof exit === "number" && Number.isSafeInteger(exit) && exit > 0) {
 			const error=`Check launcher exited ${exit} before the evaluator started; no check result.`+

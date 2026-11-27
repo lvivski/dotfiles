@@ -1,9 +1,11 @@
 import { journeyText } from "./brief.mjs";
+import { bindOutput } from "./description.mjs";
+import { offerId } from "./consent.mjs";
 import { awaitingReply, unissued } from "./dispatch.mjs";
 import { changes, verifyJoinedInputs } from "./assembly.mjs";
 import { remainingAssignments } from "./capacity.mjs";
 import { assign } from "./assignment.mjs";
-import { productOverlayPaths } from "./contract.mjs";
+import { evaluatorPaths, productOverlayPaths } from "./overlay.mjs";
 import { checkpointReceipt, currentEvaluation, goalReceipt, productPin } from "./evidence.mjs";
 import { admitted, current, reserveProduct } from "./native.mjs";
 import { productOutputs } from "./plan.mjs";
@@ -74,15 +76,12 @@ export function prepareRepin(cwd, run, actor, args, signed,repair) {
 	const files = changedFiles(cwd, from, revision).map(relative).sort();
 	if (!files.length || !Array.isArray(args.files) || JSON.stringify(args.files.map(relative).sort()) !== JSON.stringify(files))
 		fail("invalid_pin", "The file list must match the complete nonempty committed diff");
-	const protectedFiles = [run.policy.source, product ? text(run.policy.goalCheck,"goal evaluator") : run.policy.productCheck, ...run.policy.squads.flatMap(s =>
-		"areas" in s ? [s.charter, ...s.boundary, ...s.checks] : [s.charter]),
-		...Object.values(run.nodes).flatMap(n => [n.grain.specification, ...n.grain.boundary, n.grain.check])];
 	if (product) {
 		if (!productOverlayPaths(run,files))
 			fail("contract_scope","Change only the named product evaluator or its private <evaluator>.d/ helpers");
 	}
 
-	if (files.some(p => (certified?p!==evaluator:!p.startsWith(".foundry/")) || /^\.foundry\/[^/]+\.json$/i.test(p) || !outside(p, protectedFiles)))
+	if (!evaluatorPaths(run,product?"product":"goal",files,certified))
 		fail("contract_scope", "Only the selected evaluator and its .foundry helpers may change, not the brief, other checks, or product");
 	regularFiles(cwd, revision, [evaluator]);
 	for (const e of entries(cwd, revision, true, files))
@@ -109,10 +108,13 @@ export function prepareRepin(cwd, run, actor, args, signed,repair) {
 				const {last,goal} = settledCheckpoint(live,tip);
 				const upgrade = {...pin,checkpoint:last.check,goal:goal.check,recheck:""};
 				(live.productRepins ??= []).push(upgrade);
-				upgrade.recheck=reserveProduct(live,actor,cwd,tip,last.commit,{...last.outputs}).check.id;
+				const {check}=reserveProduct(live,actor,cwd,tip,last.commit,{...last.outputs});
+				upgrade.recheck=check.id;
+				bindOutput(live,check,{kind:"assembly"},tip);
 				return () => commitAt(cwd,live.policy.target) === tip;
 			}
-			(live.repins ??= []).push(pin);
+			if(!live.goal)fail("stale_pin","No original goal for this evaluator change");
+			(live.repins ??= []).push({...pin,assessment:live.goal.check});
 			for (const r of reviews(live)) retireSuperseded(live, r);
 		},
 	};
@@ -202,7 +204,9 @@ export function targetPlan(cwd,run,actor,requested,signed,args) {
 				assign(n,{type:"stop",reason:`Unavailable component ${e.id} (exit 2); target adoption superseded the unissued repair. Candidate ${e.commit} retained.`});
 			}
 			delete live.conflict;
-			pin.recheck=reserveProduct(live,actor,cwd,revision,assembly,outputs).check.id;
+			const {check}=reserveProduct(live,actor,cwd,revision,assembly,outputs);
+			pin.recheck=check.id;
+			bindOutput(live,check,{kind:"approval",id:offerId(offer)},revision);
 			return ()=>commitAt(cwd,policy.target)===revision;
 		}};
 }

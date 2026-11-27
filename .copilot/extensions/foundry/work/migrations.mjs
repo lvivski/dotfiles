@@ -1,4 +1,6 @@
 import { productOverlayPaths } from "./contract.mjs";
+import { assemblyAt } from "./revision.mjs";
+import { approvalId } from "./approved.mjs";
 import { checkReceipt, failedComponent, mixedVerification, originalVerification, verificationSource } from "./evidence.mjs";
 import { outside } from "./product.mjs";
 import { retainedMode } from "./transfer.mjs";
@@ -10,7 +12,7 @@ import { digest } from "./values.mjs";
 /** A failed verification remains an assembly, never a passing checkpoint.
  * @param {Run} run @param {Pin} pin @param {string} id @param {Map<string,Product>} products */
 export function verificationAssembly(run,pin,id,products){
-	const exact=products.get(id)??(run.join?.check===id?run.join:pin.amendments?.find(s=>s.prior.check===id)?.prior);
+	const exact=assemblyAt(run,pin,id,products);
 	if(exact || !run.testRepairs?.length)return exact;
 	const origin=originalVerification(run,id);
 	return [...products.values(),run.join,...(pin.amendments??[]).map(s=>s.prior)].find(p=>p && originalVerification(run,p.check)===origin);
@@ -79,8 +81,8 @@ export function productLineage(run,products,effects){
 				needsGoal=undefined;
 			}else if(e.kind==="product" && e.testPin){
 				if(originalVerification(run,e.id)!==originalVerification(run,needsGoal.check) || e.commit!==needsGoal.commit)return false;
-			}else if(e.kind==="component" && e.rollout){
-				const a=offers.get(e.rollout);
+			}else if(e.kind==="component" && (e.rollout || approvalId(e))){
+				const a=offers.get(e.rollout??approvalId(e)??"");
 				if(!a?.rollout || !e.grain || a.failed!==needsGoal.check || e.commit!==a.assembly || !Object.hasOwn(a.rollout.owners,e.grain) ||
 					a.rollout.owners[e.grain].output!==needsGoal.outputs[e.grain] || a.revision!==pin)return false;
 			}else if(e.kind==="component" && e.replacement){
@@ -88,7 +90,7 @@ export function productLineage(run,products,effects){
 				if(!a?.patch?.owner || a.failed!==needsGoal.check || !e.grain || e.grain!==a.patch.grain || e.commit!==a.assembly ||
 					a.patch.owner.output!==needsGoal.outputs[e.grain] || a.revision!==needsGoal.target || effects.get(needsGoal.check)?.evaluatorRevision!==pin)return false;
 			}else if(["product","component","writer","repair","scout"].includes(e.kind))return false;
-		}else if(e.kind==="component" && (e.replacement || e.rollout)){
+		}else if(e.kind==="component" && (e.replacement || e.rollout || approvalId(e))){
 			return false;
 		}
 		if(e.kind==="product" && e.receipt){

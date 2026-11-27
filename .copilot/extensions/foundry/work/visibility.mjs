@@ -14,7 +14,7 @@ import { currentOffer } from "./offers.mjs";
 import { contractHold } from "./contract.mjs";
 import { unprovenExports } from "./attestation.mjs";
 import { effectAt, heldOutcome, inspectionAt, integrityHolds } from "./revision.mjs";
-import { legacyWait } from "./abi.mjs";
+import { historicalSlot } from "./cutover.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @param {import("./model.js").NativeCall} e */
@@ -37,7 +37,8 @@ export function visible(run, actor, history=true,cwd) {
 	if (!owner && !nodes.length && !run.effects.some(e => e.nativeId === actor))
 		fail("foreign_run", "No bound assignment in this run. If you are the original writer of an uncertain launch, run get_session on yourself, then foundry_claim with the run and token from your kickoff. Do not relaunch or submit until bound.");
 
-	const pending = run.effects.filter(e => (owner || e.issuer === actor) && e.state !== "done" && (awaitingReply(e) || current(run,e,cwd)));
+	const pending = run.effects.filter(e => (owner || e.issuer === actor) && e.state !== "done" &&
+		(awaitingReply(e) || (e.tool!=="bash" || unissued(e)) && current(run,e,cwd)));
 	const unconfirmed = new Set(pending.flatMap(e => e.kind === "writer" && e.state === "uncertain" && e.token ? [e.token] : []));
 	const writerAssignments = { bound: 0, pending: 0, unconfirmed: 0, sessionActivity: "not-observed" };
 	for (const n of nodes) {
@@ -63,10 +64,10 @@ export function visible(run, actor, history=true,cwd) {
 	const upgrading = run.join?.check && verification(run.productRepins?.at(-1)) === originalVerification(run,run.join.check);
 	const stall=run.goal?.stall && !routedBlockers(run,remainingAssignments(run),cwd).some(g=>g.state==="in-review" || g.state==="awaiting-review")?run.goal.stall:undefined;
 	const retired=run.effects.find(e=>e.tool==="bash" && e.lane && !e.receipt && (unissued(e) || awaitingReply(e)));
-	const linked=new Set(run.effects.flatMap(e=>e.tool==="bash" && e.attempt?.version===2 && e.attempt.previous?[e.attempt.previous]:[]));
+	const linked=new Set(run.effects.flatMap(e=>e.tool==="bash" && e.attempt && e.attempt.version!==1 && e.attempt.previous?[e.attempt.previous]:[]));
 	const historical=run.effects.flatMap(e=>{
-		const reason=e.tool==="bash" && !linked.has(e.id) && (owner || e.issuer===actor) && legacyWait(e);
-		return reason?[{check:e.id,reason}]:[];
+		const slot=e.tool==="bash" && !linked.has(e.id) && (owner || e.issuer===actor) && historicalSlot(run,e);
+		return slot?[{check:e.id,...slot}]:[];
 	});
 	const integrity=integrityHolds(run).filter(h=>owner || effectAt(run,h.effect)?.issuer===actor);
 	const repair=run.testRepairs?.find(j=>j.state==="held" && (run.goal?.check===j.stop || run.join?.check===j.stop || run.nodes[j.grain??""]?.check===j.stop ||

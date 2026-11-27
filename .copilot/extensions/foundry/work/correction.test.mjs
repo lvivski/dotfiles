@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { git, put } from "../test/fixture.mjs";
+import { factory, git, put } from "../test/fixture.mjs";
 import { historicalFactory } from "../test/legacy-readers.mjs";
 import { openDatabase } from "./database.mjs";
+import { sourceAt } from "./description.mjs";
+import { recordedAttempt } from "./requirements.mjs";
 import { createRuntime } from "./runtime.mjs";
 
-for (const stopped of [false,true]) test(`correct the original ordinary assignment ${stopped?"after a preview-only stop":"while bound"}`,async t=>{
+for (const legacy of [true,false]) for (const stopped of [false,true]) test(`correct the original ordinary assignment ${stopped?"after a preview-only stop":"while bound"} / ${legacy?"reader 61":"reviewed"}`,async t=>{
 	const run="composer", source=".foundry/composer.json", dir="channels/UI", grain="root-action", file="coverage/inventory";
 	const clause="Expose cancel on the nonempty composer.", task="Implement discard for a nonempty composer.", excerpt="nonempty -> request discard";
-	const factory=await historicalFactory(t,61), f=factory(t,run,source,{
+	const make=legacy?await historicalFactory(t,61):factory, f=make(t,run,source,{
 		[source]:JSON.stringify({id:run,version:2,target:"refs/heads/main",direction:"Discard a nonempty draft.",
 			productCheck:"product.mjs",goalCheck:"goal.mjs",squads:[{id:"channels",charter:"brief",areas:["channels"],checks:["component.mjs"]}]}),
 		".foundry/composer/journey.md":"Discard and confirm.","brief":"Follow the checked composer contract.",
@@ -24,7 +26,7 @@ for (const stopped of [false,true]) test(`correct the original ordinary assignme
 	put(w.cwd,`${dir}/test`,"nonempty");
 	const preview=(await old.operation("preview",{run,token:w.token},w.id)).nodes[0].preview;assert.ok(preview);
 	const bound={run,grain,worker:w.id,review:review.id,file,excerpt,clause};
-	await assert.rejects(f.owner.operation("correct",bound,"owner"),{code:"invalid_correction"});
+	if(legacy)await assert.rejects(f.owner.operation("correct",bound,"owner"),{code:"invalid_correction"});
 	if (stopped) await old.operation("submit",{run,token:w.token,missingInput:"The task contradicts the checked contract."},w.id);
 	const args=stopped ? {...bound,preview} : bound;
 	await f.settle();
@@ -74,6 +76,23 @@ for (const stopped of [false,true]) test(`correct the original ordinary assignme
 	assert.equal(git(f.root,"show",`${result.qualified}:${file}`),excerpt);
 	assert.equal(result.products?.at(-1)?.receipt?.commit,result.qualified);
 	assert.equal(result.goal?.receipt?.commit,result.qualified);
+	const end=db.read(run);assert.ok(end);
+	const launch=end.effects.find(e=>e.kind==="writer" && e.grain===grain),original=before.effects.find(e=>e.id===launch?.id);
+	assert.ok(launch?.kind==="writer" && original?.kind==="writer");assert.deepEqual(launch.writing,original.writing);
+	const c=end.effects.find(e=>e.id===end.nodes[grain].check);assert.ok(c?.kind==="component" && c.commit);db.verifySigned(run,c);
+	if(legacy)assert.equal(end.inspections,undefined);
+	else{
+		const i=end.inspections?.find(i=>i.component===c.id);assert.ok(i?.state==="approved");
+		assert.equal(i.task.trim(),task);assert.ok(c.attempt?.version===3 && c.attempt.source.kind==="writer" && c.attempt.source.id===launch.id);
+		/** @param {typeof end} r */
+		const published=r=>{
+			const p=r.effects.find(e=>e.id===r.products.at(-1)?.check);assert.ok(p?.kind==="product");
+			return recordedAttempt(r,p,sourceAt(r,p));
+		};
+		assert.equal(published(end),true);assert.equal(published({...end,inspections:[]}),false);
+		const changed=structuredClone(end),r=changed.effects.find(e=>e.id===review.id);assert.ok(r?.kind==="scout" && r.correction);
+		r.correction.worker="unbound-peer";assert.equal(published(changed),false);
+	}
 	/** @param {import("./model.js").Run} r */
 	function reviewRecord(r) {const e=r.effects.find(e=>e.id===review.id);return e?.kind==="scout" && e.observation;}
 });

@@ -1,5 +1,4 @@
 import { verifyRepairInputs } from "./assembly.mjs";
-import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { assign } from "./assignment.mjs";
 import { correctionBasis, revisedTask } from "./amendment.mjs";
@@ -8,7 +7,7 @@ import { generationOf, goalReceipt, missingInput } from "./evidence.mjs";
 import { frozenCheckpoint } from "./goal.mjs";
 import { admitted, reserveNotice } from "./native.mjs";
 import { originalAttempt, stalePins, writerInputs } from "./lineage.mjs";
-import { changedFiles, commitAt, committedFile, verifyContracts } from "./product.mjs";
+import { changedFiles, citedText, commitAt, verifyContracts } from "./objects.mjs";
 import { fail, fields, name, pinnedSelection, relative, roots, sameScope, scopeLabel, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -60,8 +59,7 @@ export function prepareCorrection(cwd, run, actor, a) {
 		for (const product of [current.products.at(-1),current.join])
 			if (product && product.commit !== r.base && changedFiles(cwd,r.base,product.commit,[file,...roots(n.grain.directory)]).length)
 				fail("stale_assignment","The cited evidence or assigned directory changed since the review");
-		const bytes = committedFile(cwd,r.base,file);
-		if (bytes.includes(0) || !isUtf8(bytes) || !bytes.toString("utf8").includes(excerpt))
+		if (!citedText(cwd,r.base,file,excerpt))
 			fail("invalid_correction","The excerpt must appear verbatim in the selected UTF-8 file at the reviewed product");
 		return { n, r, target, task, ...(frozen && {frozen:[frozen.check,current.goal?.check]}), correction:{ worker, clause, file, excerpt, ...basis },
 			...(stopped && {goal:current.goal?.check,checkpoint:current.products.at(-1)?.check}) };

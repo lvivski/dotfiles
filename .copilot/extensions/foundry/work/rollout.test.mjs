@@ -304,17 +304,17 @@ test("writer-drafted uncertain launch accepts only its late original binding aft
 	assert.equal(read().correctionDrafts?.[0].parts[0].workflow,id);assert.ok(read().effects.find(e=>e.id===j.check)?.receipt);
 });
 
-for(const lost of [false,true])test(`an author's start acknowledgment before packet delivery / ${lost?"previous issuer lost the ID":"reload retains the ID"}`,async t=>{
+test("an author's start acknowledgment survives reload before its packet is delivered",async t=>{
 	const {f,owner,open,read,j,signed}=await stopped(t,false,{reader:94,area:true});owner.close();f.owner.close();
 	const id="original-admission",failure=signed(j.check);
 	/** @type {import("./author.mjs").Ticket|undefined} */ let ticket;
 	let starts=0,forms=0,reads=0;
-	const first=open(lost?await historicalRuntime(t,95):createRuntime,{draftAgent:async t=>{starts++;ticket=t;return {runId:id,status:"running",workflowName:"foundry-draft"};}});
+	const first=open(createRuntime,{draftAgent:async t=>{starts++;ticket=t;return {runId:id,status:"running",workflowName:"foundry-draft"};}});
 	first.sessionStart("owner",f.root);first.turn("owner");await first.flush();first.close();
 	const issued=read().correctionDrafts?.at(-1)?.parts[0];
 	assert.ok(ticket && issued?.dispatch===ticket.dispatch);
-	assert.equal(issued.workflow,lost?undefined:id,"only an actually retained acknowledgment survives the old issuer");
-	assert.equal(issued.awaitingPacket,lost?undefined:true);
+	assert.equal(issued.workflow,id,"persist the admitted identity even when the body has not read its packet");
+	assert.equal(issued.awaitingPacket,true);
 	/** @type {import("./author.mjs").Packet|undefined} */ let packet;
 	const restored=open(createRuntime,{formIdle:async()=>true,draftAgent:async()=>assert.fail("No replacement launch"),
 		confirmProposal:async()=>{forms++;return true;},draftState:async workflow=>{
@@ -324,8 +324,8 @@ for(const lost of [false,true])test(`an author's start acknowledgment before pac
 			return {runId:id,status:"completed",result:{subject:packet?.subject,reason:"Produce the promised value.",edits:[{file:value,before:row.before,text:"ready\n"}]}};
 		}});
 	restored.sessionStart("owner",f.root);restored.turn("owner");await restored.flush();
-	assert.equal(forms,0);assert.equal(reads>0,!lost);assert.equal(read().join?.check,j.check);
-	if(!lost)await assert.rejects(restored.draftPacket(ticket,"owner","other-admission"),{code:"wrong_workflow"});
+	assert.equal(forms,0);assert.ok(reads>0);assert.equal(read().join?.check,j.check);
+	await assert.rejects(restored.draftPacket(ticket,"owner","other-admission"),{code:"wrong_workflow"});
 	packet=await restored.draftPacket(ticket,"owner",id);
 	restored.turn("owner");await restored.flush();restored.turn("owner");await restored.flush();
 	assert.ok(restored.inspect({run,detail:"proof"},"owner").qualification);

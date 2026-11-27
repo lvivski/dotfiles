@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { executor } from "./adapter.mjs";
 import { permissionKey } from "./critique.mjs";
-import { acceptAuthor, authorPacket, verifyDraft } from "./authorship.mjs";
+import { acceptAuthor, authorPacket, stoppedDraftCheck, verifyDraft } from "./authorship.mjs";
 import { availableReservations, noWorkflowSlot } from "./capacity.mjs";
 import { draftAllowed, movePart, partId } from "./drafts.mjs";
 import { drafting } from "./rules/drafts.mjs";
@@ -19,8 +19,7 @@ export function nextAuthor(r){
 		r.effects.some(e=>e.permissionHold) || r.inspections?.some(i=>i.permissionHold))return;
 	for(const d of r.correctionDrafts??[]){
 		if(!draftAllowed(d) || d.blob || d.parts.some(p=>p.state==="held") || d.goal!==r.goal?.check ||
-			(d.evaluator?!!r.join:!r.join || !r.effects.some(e=>e.id===d.check && (e.id===r.join?.check || e.kind==="component" && e.rollout &&
-				r.adoptions?.some(a=>a.id===e.rollout && a.failed===r.join?.check)))))continue;
+			(d.evaluator?!!r.join:d.check!==stoppedDraftCheck(r)))continue;
 		const p=d.parts.find(p=>p.state!=="returned");
 		if(p && (p.state==="ready" && availableReservations(r)>0 || p.state==="issued" && p.workflow))return {d,p};
 	}

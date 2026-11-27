@@ -5,7 +5,7 @@ import { candidatePacket } from "./critique.mjs";
 import { currentInspection, inspectionResult } from "./inspection.mjs";
 import { boundInspections, markInspection, matchingInspections, readyInspections } from "./inspections.mjs";
 import { expired } from "./native.mjs";
-import { changeOffer } from "./evidence.mjs";
+import { boundChange, changeOffer } from "./evidence.mjs";
 import { digest, fail, record } from "./values.mjs";
 import { repliedWorkflow, terminalWorkflow, workflowIdentity } from "./workflow.mjs";
 
@@ -187,8 +187,8 @@ export function auditor(io) {
 			if (queued && !io.closed()) io.queue(id,issuer);
 		}
 	}
-	/** @param {string} id @param {string} job @param {string} ticket @param {string} actor @param {string} workflow */
-	async function packet(id,job,ticket,actor,workflow) {
+	/** @param {string} id @param {string} job @param {string} ticket @param {string} actor @param {string} workflow @param {string} [original] */
+	async function packet(id,job,ticket,actor,workflow,original) {
 		const bound=await io.persist(()=>io.mutate(id,run=>{
 			const i=issued(run,job,ticket,actor);
 			if(!i){
@@ -215,15 +215,15 @@ export function auditor(io) {
 				fail("inspection_held","Inspection cannot execute: the dispatch is no longer current, active and permitted");
 			const target=protectedTarget(run,i);
 			if (target && io.tip(run)!==target) fail("inspection_held","The authorized checkpoint target moved before its candidate could be reviewed");
-			if (verify) {
-				const c=run.effects.find(e=>e.id===i.component);
-				if (c?.kind!=="component") fail("missing_receipt","Missing original reviewed component");
-				io.verifySigned(id,c);
-			}
-			return i;
+			const c=run.effects.find(e=>e.id===i.component);
+			if (c?.kind!=="component") fail("missing_receipt","Missing original reviewed component");
+			if (verify) io.verifySigned(id,c);
+			// The approved owner binding includes the original node's exact task.
+			const source=boundChange(run,c);
+			return {inspection:i,assignment:source && run.nodes[source.grain].grain.task};
 		}
-		const result=candidatePacket(io.cwd(),live(),budget);
-		live(true);
+		const {inspection,assignment}=live(),result=candidatePacket(io.cwd(),inspection,budget,assignment,original);
+		if(live(true).assignment!==assignment)fail("stale_inspection","The original scoped assignment changed before packet delivery");
 		return result;
 	}
 	return {launch,packet,permission,canReceive:!!(io.start && io.lookup),canObserve:!!io.lookup,

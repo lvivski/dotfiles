@@ -7,8 +7,23 @@ import { factory, git, put } from "../test/fixture.mjs";
 import { openDatabase } from "./database.mjs";
 import { observe, parseObservation } from "./graph.mjs";
 import { issue } from "./native.mjs";
-import { combine } from "./product.mjs";
+import { combine, rejoin } from "./product.mjs";
+import { isRejoined } from "./objects.mjs";
 import { decode } from "./snapshot.mjs";
+
+test("a checkpoint-only rejoin proves the entire tree and target parent without touching the staged index",t=>{
+	const f=factory(t,"trees",".foundry/trees.json",{base:"original"}),side=path.join(path.dirname(f.root),"checked");
+	git(f.root,"worktree","add","-q","--detach",side,f.tip);
+	put(side,"checked","earned");git(side,"add","checked");git(side,"commit","-qm","Checked work");
+	const last={check:"past",target:f.tip,commit:git(side,"rev-parse","HEAD"),outputs:{}};
+	put(f.root,"incoming","new target");git(f.root,"add","incoming");git(f.root,"commit","-qm","Move target");
+	const target=git(f.root,"rev-parse","HEAD");put(f.root,"staged","not part of either input");git(f.root,"add","staged");
+	const tree=rejoin(f.root,last,target,false),candidate=combine(f.root,tree,[],target);
+	assert.equal(isRejoined(f.root,last,target,candidate),true);
+	assert.equal(isRejoined(f.root,last,target,tree),false,"same tree, wrong parent");
+	assert.equal(isRejoined(f.root,last,target,combine(f.root,target,[],target)),false,"same parent, missing the checkpoint bytes");
+	assert.equal(git(f.root,"diff","--cached","--name-only"),"staged");assert.equal(git(f.root,"rev-parse","HEAD"),target);
+});
 
 for (const legacy of [false,true]) test(`an approved integration file and primary directory are checked, attributed and repaired as one grain / ${legacy?"legacy checkpoint upgrade":"new brief"}`, async t => {
 	const run="labels", source=".foundry/labels.json", directory="render/labels", file="render/views/index", sibling="render/views/menu";

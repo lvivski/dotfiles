@@ -11,6 +11,7 @@ import { contains, disjoint, fail, fields, FoundryError, name, record, relative,
 /** @typedef {Omit<Packet,"prompt"> & ReturnType<typeof inspectionResult>} Result */
 const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const unavailable = /** @param {string} why @returns {never} */ why => fail("inspection_unavailable",why);
+const changedPacket=()=>unavailable("The original review subject changed or its tool guard was not recorded.");
 const equal = /** @param {Entry|undefined} a @param {Entry|undefined} b */ (a,b) => a?.oid===b?.oid && a?.mode===b?.mode;
 const metadata = /** @param {Entry|undefined} e */ e => e ? {mode:e.mode,oid:e.oid} : null;
 
@@ -100,6 +101,10 @@ const locationPrefix="Review location: ";
 const tooLarge=()=>unavailable("The complete candidate evidence exceeds the review context budget; no partial review.");
 /** @param {{inspection:string,component:string,candidate:string}} pins */
 const subject=({inspection,component,candidate})=>"Frozen review subject: "+JSON.stringify({inspection,component,candidate});
+/** The original guarded workflow records only this digest, not a second copy of product source.
+ * @param {{inspection:string,component:string,candidate:string}} pins @param {string} prompt */
+const packetHash=({inspection,component,candidate},prompt)=>createHash("sha256").update("packet-only-v1\0")
+	.update(JSON.stringify({inspection,component,candidate})).update("\0").update(prompt).digest("hex");
 
 /** Check the raw byte lower bound before reading ANY body. Do not ask for objects
  * from a reviewed-base listing or excluded ownership, even for the sizing pass.
@@ -137,17 +142,20 @@ const instructions=[
 	"Trace the actual behavior against the task. Look for concrete correctness problems, regressions, lost behavior and missing edge cases. Removed/replaced files at the reviewed base are metadata only; do not infer their old contents. A generation delta shows complete before/after versions. Null means absent, not an empty file. If there is no scoped delta, inspect the current candidate contents or verified absence instead.",
 	"Return only {outcome,summary}. Use changes for a blocking defect: cite file:line, what fails, why, and an actionable correction. Use approved only after inspecting the entire supplied change or attestation: cite file:line and explain the behavior checked, not just 'looks good'. Use unavailable if the packet, evidence or provider context is insufficient. Do not copy secrets into the summary or report a writer's verdict. Cite 1-based candidate lines (generation lines for deletions; 1 for metadata, an empty file or an attested absent path). Keep the summary concise.",
 ].join("\n");
-/** @param {string} cwd @param {Inspection} i @param {number} [budget] */
-export function candidatePacket(cwd,i,budget=Infinity) {
+/** @param {string} cwd @param {Inspection} i @param {number} [budget] @param {string} [assignment] @param {string} [recorded] */
+export function candidatePacket(cwd,i,budget=Infinity,assignment,recorded) {
 	if (budget!==Infinity && (!Number.isSafeInteger(budget) || budget<0)) unavailable("Unknown review context budget.");
 	const {id:inspection,component,grain,base,generation,candidate,scope}=i;
 	for (const [label,id] of Object.entries({inspection,component,grain})) safeText(name(id,label));
 	const task=safeText(text(i.task,"assigned task")), grant=grantPaths(scope);
-	const header=subject({inspection,component,candidate}), chunks=[header]; let used=Buffer.byteLength(header);
-	/** @param {string} row */
-	const add=row=>{used+=Buffer.byteLength(row)+1; if (used>budget) tooLarge(); chunks.push(row);};
+	const pins={inspection,component,candidate},header=subject(pins),chunks=[header]; let used=Buffer.byteLength(header);
+	/** @param {string} row @param {number} [at] */
+	const add=(row,at=chunks.length)=>{used+=Buffer.byteLength(row)+1; if (used>budget) tooLarge(); chunks.splice(at,0,row);};
 	add(instructions);
 	add("Frozen review basis and assigned task: "+JSON.stringify({grain,base,generation,task}));
+	const at=chunks.length,extra=assignment!==undefined && assignment!==task ?
+		"Original scoped assignment (task context only): "+JSON.stringify(safeText(text(assignment,"original assignment"))):undefined;
+	if(recorded===undefined && extra)add(extra);
 	const trees=new Map([...new Set([base,generation,candidate])].map(pin=>{
 		verifyCommit(cwd,pin); return [pin,scopedTree(cwd,pin,grant)];
 	}));
@@ -187,7 +195,14 @@ export function candidatePacket(cwd,i,budget=Infinity) {
 		safePath(root); add(locationPrefix+JSON.stringify({file:root,lines:1}));
 		add("Verified absence: no owned file entries at this "+(grant.files.includes(root)?"exact file":"directory")+" in the pinned candidate after ownership exclusions.");
 	}
-	return {inspection,component,candidate,prompt:chunks.join("\n")};
+	if(recorded!==undefined && extra){
+		const prior=chunks.join("\n");
+		if(packetHash(pins,prior)===recorded)return {...pins,prompt:prior};
+		add(extra,at);
+	}
+	const prompt=chunks.join("\n");
+	if(recorded!==undefined && packetHash(pins,prompt)!==recorded)changedPacket();
+	return {...pins,prompt};
 }
 
 /** Accept a conclusion only if it can point at actual evidence. Never resolve a
@@ -279,7 +294,7 @@ export async function frozenPacket(ctx,read,wait,step){
 	return packet;
 }
 
-/** @param {()=>{inspectionPacket:(run:string,inspection:string,dispatch:string,actor:string,workflow:string)=>Promise<Packet>}} runtimeProvider
+/** @param {()=>{inspectionPacket:(run:string,inspection:string,dispatch:string,actor:string,workflow:string,original?:string)=>Promise<Packet>}} runtimeProvider
  * @returns {import("@github/copilot-sdk/extension").WorkflowDefinition<Args,Result>} */
 export function critiqueDefinition(runtimeProvider) {
 	return {
@@ -291,17 +306,22 @@ export function critiqueDefinition(runtimeProvider) {
 			const run=name(args.run,"run"), inspection=name(args.inspection,"inspection"), dispatch=name(args.dispatch,"dispatch");
 			const actor=text(ctx.session.sessionId,"issuing session"), workflow=text(ctx.runId,"bound workflow");
 			ctx.signal.throwIfAborted();
-			// Outside ctx.step: a resumed workflow must prove it still owns these exact inputs.
-			const runtime=runtimeProvider(), packet=await runtime.inspectionPacket(run,inspection,dispatch,actor,workflow);
-			ctx.signal.throwIfAborted();
-			if (packet.inspection!==inspection || typeof packet.candidate!=="string" || !oid.test(packet.candidate))
-				unavailable("Mismatched or unpinned inspection packet.");
-			const pins={inspection,component:name(packet.component,"component"),candidate:packet.candidate};
-			const prompt=text(packet.prompt,"frozen candidate review packet");
-			if (!prompt.startsWith(subject(pins)+"\n")) unavailable("Review packet identifies a different frozen subject.");
-			// A memoized reply obtained without the tool guard is not a packet-only review.
-			const signature=createHash("sha256").update("packet-only-v1\0").update(JSON.stringify(pins)).update("\0").update(prompt).digest("hex");
-			if (await ctx.step(`subject:${inspection}`,()=>signature)!==signature) unavailable("The original review subject changed or its tool guard was not recorded.");
+			const runtime=runtimeProvider(), packet=runtime.inspectionPacket.bind(runtime,run,inspection,dispatch,actor,workflow);
+			/** @param {[]|[string]} expected */
+			async function read(...expected){
+				const p=await packet(...expected);
+				ctx.signal.throwIfAborted();
+				if(p.inspection!==inspection || typeof p.candidate!=="string" || !oid.test(p.candidate))unavailable("Mismatched or unpinned inspection packet.");
+				const pins={inspection,component:name(p.component,"component"),candidate:p.candidate},prompt=text(p.prompt,"frozen candidate review packet");
+				if(!prompt.startsWith(subject(pins)+"\n"))unavailable("Review packet identifies a different frozen subject.");
+				return {pins,prompt,signature:packetHash(pins,prompt)};
+			}
+			/** @type {Awaited<ReturnType<typeof read>>|undefined} */ let fresh;
+			const saved=await ctx.step(`subject:${inspection}`,async()=>{fresh=await read();return fresh.signature;});
+			if(typeof saved!=="string" || !/^[a-f0-9]{64}$/.test(saved))return changedPacket();
+			// A memoized subject skips the producer, never the live issuer/permission check.
+			const {pins,prompt,signature}=fresh??await read(saved);
+			if(signature!==saved)changedPacket();
 			ctx.signal.throwIfAborted();
 			const builtin=await builtInReviewer(ctx.session); ctx.signal.throwIfAborted();
 			if (!builtin) return {...pins,outcome:"unavailable",summary:"The effective built-in Rubber Duck reviewer could not be verified."};

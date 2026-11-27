@@ -7,14 +7,12 @@ import { correctionRefs, draftChanges, matchesDraft } from "./drafts.mjs";
 import { contractConflict, outside } from "./product.mjs";
 import { grant } from "./transfer.mjs";
 import { covers, digest } from "./values.mjs";
+import { offerId } from "./approved.mjs";
+export { offerId } from "./approved.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
 /** @typedef {import("./model.js").Adoption} Adoption */
 /** @typedef {Omit<Adoption,"id"|"basis"|"decision"|"previous">} Subject */
-
-/** Approval identity is the authorized inputs, not the wording or formatting of their presentation.
- * @param {Subject} s */
-export const offerId=s=>digest([s.revision,s.checkpoint,s.goal,s.assembly??null,...(s.failed?[s.failed,s.rollout??s.patch??s.message]:[s.evaluator??s.manifest??s.message])]);
 
 /** Bind the actual output grants, not the whole scheduling document or the last actor to write it.
  * @param {Run} run @param {Record<string,string>} outputs @param {string[]} [retained] */

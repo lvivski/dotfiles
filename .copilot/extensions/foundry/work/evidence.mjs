@@ -1,9 +1,11 @@
 import { digest } from "./values.mjs";
+import { generationOf } from "./origin.mjs";
+export { generationOf } from "./origin.mjs";
 import { effectAt, integrityHolds, productAt } from "./revision.mjs";
 import { assign } from "./assignment.mjs";
 import { contractHold } from "./contract.mjs";
 import { unprovenExports } from "./attestation.mjs";
-import { checkReceipt } from "./receipt.mjs";
+import { checkReceipt, memberApproval } from "./receipt.mjs";
 export { checkReceipt, sameEvaluation } from "./receipt.mjs";
 
 /** @typedef {import("./model.js").Run} Run */
@@ -15,8 +17,8 @@ export const productPin = run => {
 /** Locate the recorded approval, not a new grant. Historical readers and live validators
  * use the same reference even after the output is replaced. @param {Run} run @param {import("./model.js").NativeCall} c */
 export function changeOffer(run,c){
-	const id=c.rollout??c.replacement;
-	return id?run.adoptions?.find(a=>a.id===id && (!c.rollout || a.rollout)):undefined;
+	const batch=memberApproval(c),id=batch??c.replacement;
+	return id?run.adoptions?.find(a=>a.id===id && (!batch || a.rollout)):undefined;
 }
 /** What both change grants must still own. Single-output consumer restrictions and
  * rollout successor/evaluator policy remain with those respective grants.
@@ -168,9 +170,6 @@ export function changedFrom(n, e) {
 	const receipt = blockedComponent(n, e);
 	if (receipt && !receipt.failure) return receipt.commit;
 }
-
-/** @param {import("./model.js").Effect|undefined} w */
-export const generationOf = w => w?.kind === "writer" ? w.pooled?.generation ?? w.args.base_branch : undefined;
 
 /** @param {Run} run @param {import("./model.js").Node} n */
 export function failedCandidate(run, n) {

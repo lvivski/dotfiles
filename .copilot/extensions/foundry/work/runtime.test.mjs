@@ -2,7 +2,7 @@ import { readPolicy } from "./brief.mjs";
 import assert from "node:assert/strict";
 import { pairedWork } from "../test/install.mjs";
 import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,9 +14,11 @@ import { setImmediate as turn } from "node:timers/promises";
 import { inlineDelivery } from "../test/participant.mjs";
 import { mapSnapshot } from "../map/model.mjs";
 import { checksum, openDatabase, ledgerPath, protocol } from "./database.mjs";
+import { openClaims } from "./claims.mjs";
 import { feedback, goalDelta } from "./feedback.mjs";
 import { timelyChecks } from "./goal.mjs";
 import { advance, observe, parseObservation } from "./graph.mjs";
+import { declaredWriter } from "./origin.mjs";
 import { withProduct } from "./product.mjs";
 import { recover } from "./recovery.mjs";
 import { reviews } from "./charter.mjs";
@@ -1342,6 +1344,32 @@ async function assemblyCheckpoint(t, files,make=factory) {
 	const nextCore = await f.reading("engine"), nextPipeline = await f.reading("pipeline");
 	return { f, nextCore, nextPipeline };
 }
+
+test("a named area output uses the checked definition from the scout's packet across two reassignments",async t=>{
+	const {f}=await assemblyCheckpoint(t,{[goalCheck]:`import {readFileSync} from "node:fs";process.exit(readFileSync("${assembly}/index.mjs","utf8").includes("delivered")?0:1);`});
+	const db=openDatabase(f.root);t.after(()=>db.close());const read=()=>db.read(run)??assert.fail();
+	for(const body of ['export default ()=>"in progress";','export default ()=>"delivered";']){
+		const before=read(),p=before.products.at(-1),n=before.nodes.assembly,original=before.effects.find(e=>e.id===n.check);
+		assert.ok(p && original?.kind==="component" && original.receipt?.exit===0);db.verifySigned(run,original);
+		await report(await f.reading("engine"),".foundry/left.md",[]);
+		const job=await f.reading("pipeline");assert.equal(job.base,p.commit);assert.equal(job.packet.outputs.assembly,n.candidate);
+		await report(job,`${assembly}/index.mjs`,["assembly"]);
+		const r=read(),next=r.nodes.assembly,w=r.effects.findLast(e=>e.kind==="writer" && e.grain==="assembly");
+		assert.ok(next.worker && w?.kind==="writer" && w.writing?.source.review===job.id,next.reason??"Missing the restaffed writer");
+		const grant=declaredWriter(r,w);assert.deepEqual(grant?.grain,n.grain);assert.notEqual(next.token,n.token);
+		const stale=structuredClone(r),seen=stale.effects.find(e=>e.id===job.id),copy=stale.effects.find(e=>e.id===w.id);
+		assert.ok(seen?.kind==="scout" && seen.packet && copy?.kind==="writer");seen.packet.outputs.assembly=f.tip;
+		assert.equal(declaredWriter(stale,copy),undefined,"a name alone does not identify the selected checked output");
+		seen.packet.outputs.assembly=job.packet.outputs.assembly;
+		const previous=original.attempt?.version===3 && original.attempt.source;
+		assert.ok(previous && previous.kind==="writer");const donor=stale.effects.find(e=>e.id===previous.id);
+		assert.ok(donor?.kind==="writer");donor.callId=w.callId;
+		assert.equal(declaredWriter(stale,copy),undefined,"only the actual signed producer dispatch can establish these terms");
+		await f.write("assembly",body);assert.deepEqual(read().effects.find(e=>e.id===n.check),original);
+	}
+	const s=await f.status();assert.ok(s.qualified && s.goal?.receipt?.commit===s.qualified);
+	assert.match(git(f.root,"show",`${s.qualified}:${assembly}/index.mjs`),/delivered/);
+});
 
 for (const repeat of [false, true])
 	test(`a current consumer pins its ${repeat ? "repeated" : "checkpoint"} input against both a repartition and a target edit`, async t => {
@@ -3623,7 +3651,7 @@ test("ledger readers survive concurrent SQLite journal removal but still refuse 
 	finally { rmSync(alias); }
 });
 
-test("an upgraded reader requires the original writer to reload before status or submission", async t => {
+test("a changed reader or admission policy fences the original writer before status or submission", async t => {
 	const f = fixture(t);
 	await f.start();
 	const [w] = f.workers.values();
@@ -3649,8 +3677,17 @@ test("an upgraded reader requires the original writer to reload before status or
 	assert.ok(node);
 	put(w.cwd, `lib/${node.grain}/index.mjs`, `export default ${grainIds.indexOf(node.grain) + 1};\n`);
 	const file = ledgerPath(f.root), before = readFileSync(file);
-	writeFileSync(version, "updated\n");
 	const expected = { code: "stale_reader", message: /reload Foundry in this session.*status/i };
+	const policyFile=path.join(installed,"prerequisites.json"),policy=readFileSync(policyFile,"utf8");
+	writeFileSync(policyFile,JSON.stringify(JSON.parse(policy),null,2));assert.deepEqual(await stale.operation("status",{run},w.id),status);
+	for(const changed of ['[{"when":["multipleOwners"],"requires":["included-publications"]},{"requires":[]}]','[']){
+		writeFileSync(policyFile,changed);
+		await assert.rejects(stale.operation("status",{run},w.id),expected);
+		await assert.rejects(stale.operation("submit",{run,token:w.token},w.id),expected);
+		assert.deepEqual(readFileSync(file),before);
+	}
+	writeFileSync(policyFile,policy);
+	writeFileSync(version, "updated\n");
 	await assert.rejects(stale.operation("status", { run }, w.id), expected);
 	await assert.rejects(stale.operation("submit", { run, token: w.token }, w.id), expected);
 	assert.deepEqual(readFileSync(file), before);
@@ -3708,7 +3745,7 @@ test("an inadmissible spool row withholds its attempt; a real late sibling publi
 	let bad="";
 	await f.submit(left.id,1,{execute:async(tool,args)=>{
 		assert.equal(tool,"bash");bad=String(args.shellId).slice(8);
-		db.mutateLocked(run,r=>{const e=r.effects.find(e=>e.id===bad);assert.ok(e);db.outcomeWriter(run,e);});
+		const claims=openClaims(realpathSync(left.cwd),run,bad);try{claims.claim();}finally{claims.close();}
 		return {resultType:"unconfirmed"};
 	}});
 	await f.submit(right.id,2,{execute:async(tool,args)=>{assert.equal(tool,"bash");good=args;return {resultType:"unconfirmed"};}});

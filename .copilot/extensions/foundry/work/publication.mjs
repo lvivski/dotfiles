@@ -1,10 +1,12 @@
 import { checkReceipt } from "./receipt.mjs";
 import { effectAt, inspectionAt } from "./revision.mjs";
-import { fail } from "./values.mjs";
+import { digest, fail } from "./values.mjs";
 
-/** A pending, unbound, unavailable or permission-held review is neither approval nor a confirmed code defect.
+/** A pending, unbound or unavailable review is not an observed verdict.
  * @param {import("./model.js").Inspection|undefined} i */
-export const publicationVerdict=i=>i?.dispatch && i.workflow && i.summary && !i.permissionHold && (i.state==="approved" || i.state==="changes") ? i.state : undefined;
+const observedReview=i=>i?.dispatch && i.workflow && i.summary && (i.state==="approved" || i.state==="changes") ? i.state : undefined;
+/** @param {import("./model.js").Inspection|undefined} i */
+export const publicationVerdict=i=>i?.permissionHold?undefined:observedReview(i);
 
 /** A signed component observation can open review; it cannot by itself publish the bytes.
  * @param {import("./model.js").Effect|undefined} c @param {string|undefined} grain @param {string|undefined} candidate */
@@ -16,14 +18,32 @@ export function observedComponent(c,grain,candidate){
 /** Resolve the signed component and its applicable decision. A finding belongs to this
  * candidate just as an approval does; neither may be borrowed from another issuer or grant.
  * @param {import("./model.js").Run} run @param {string|undefined} component @param {string} grain @param {string|undefined} candidate */
-export function componentDecision(run,component,grain,candidate) {
+function componentRecord(run,component,grain,candidate) {
 	const observed=observedComponent(effectAt(run,component),grain,candidate);
 	if(!observed)return;
 	const review=inspectionAt(run,component);
 	if(run.inspections!==undefined && (!review || review.grain!==grain || review.candidate!==candidate ||
 		review.issuer!==run.owner && review.issuer!==observed.component.issuer))return;
+	return {...observed,review};
+}
+
+/** Read what a writer actually received at dispatch. A stricter rule for a new
+ * publication or proof cannot invalidate this historical input reference.
+ * @param {import("./model.js").Run} run @param {string} grain
+ * @param {NonNullable<import("./model.js").NativeCall["writing"]>["inputs"][string]} pin */
+export function grantedComponent(run,grain,pin){
+	const record=componentRecord(run,pin.component,grain,pin.revision);
+	if(!record || (record.review?.id??null)!==pin.review)return;
+	if(record.review?observedReview(record.review)==="approved":run.inspections===undefined && !!run.historicalPrefix?.length)return record.component;
+}
+
+/** Judge a new use, not the continuing validity of the original observation.
+ * @param {import("./model.js").Run} run @param {string|undefined} component @param {string} grain @param {string|undefined} candidate */
+export function componentDecision(run,component,grain,candidate) {
+	const observed=componentRecord(run,component,grain,candidate);if(!observed)return;
+	const {review}=observed;
 	const verdict=review?publicationVerdict(review):"approved";
-	if(verdict)return {...observed,review,verdict};
+	if(verdict)return {...observed,verdict};
 }
 /** A consumer needs a publication, not just a completed review. Pre-journal inputs have
  * only their separate historical corroboration path. @param {import("./model.js").Run} run
@@ -31,6 +51,16 @@ export function componentDecision(run,component,grain,candidate) {
 export function publishedComponent(run,component,grain,candidate){
 	const result=componentDecision(run,component,grain,candidate);
 	if(result?.verdict==="approved")return result;
+}
+
+/** @param {Pick<import("./model.js").Inspection,"issuer"|"base"|"generation"|"scope"|"task"|"specification">} i */
+export const reviewSubject=i=>digest([i.issuer,i.base,i.generation,i.scope,i.task,i.specification??null]);
+/** A future review ID is not known at reservation. Its exact subject and
+ * producer are known; only a bound, eligible approval can satisfy the edge.
+ * @param {import("./model.js").Run} run @param {Extract<import("./model.js").Requirement,{kind:"publication"}>} f */
+export function hasPublication(run,f){
+	const c=effectAt(run,f.component),p=c?.kind==="component" && c.grain && publishedComponent(run,c.id,c.grain,c.commit);
+	return !!p && !!p.review && reviewSubject(p.review)===f.subject;
 }
 
 /** A signed checkpoint can carry its own unchanged pre-journal input forward. It does not make that old component signed.

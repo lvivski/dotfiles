@@ -3,6 +3,7 @@ import { changeOffer, checkReceipt, failedComponent } from "./evidence.mjs";
 import { verificationAssembly } from "./migrations.mjs";
 import { historicalGrant } from "./partition.mjs";
 import { publishedComponent } from "./publication.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { outside } from "./product.mjs";
 import { assigningCharter } from "./replacement.mjs";
 import { contains, covers, ownership } from "./values.mjs";
@@ -41,7 +42,7 @@ export function validDraftScope(run,d){
 	const e=run.effects.find(c=>c.id===d.check),goal=run.effects.find(c=>c.id===d.goal),p=run.products.find(p=>p.check===d.checkpoint);
 	if(!e?.receipt || !e.runnerClaim || goal?.kind!=="goal" || !p || goal.commit!==p.commit || ![1,2].includes(checkReceipt(goal)?.exit??-1))return false;
 	const pin=run.productRepins?.find(p=>p.revision===d.target && p.targetFrom);
-	const parent=e.kind==="component" && e.rollout?changeOffer(run,e):undefined,joined=parent?.failed??e.id;
+	const parent=e.kind==="component" && memberApproval(e)?changeOffer(run,e):undefined,joined=parent?.failed??e.id;
 	const join=pin && verificationAssembly(run,pin,joined,new Map(run.products.map(p=>[p.check,p])));
 	const failGrain=parent?e.grain:failedComponent(e);
 	if(d.previousCheck){

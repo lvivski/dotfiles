@@ -2,8 +2,10 @@ import { working } from "./assignment.mjs";
 import { activeDelivery } from "./batch.mjs";
 import { contractHold } from "./contract.mjs";
 import { missingInput, qualifiedProduct } from "./evidence.mjs";
-import { checked, originalScope, poolSource, producingGrant, referenceAttempt, stalePins, submittedBy, writerVersion } from "./lineage.mjs";
+import { checked, originalScope, poolSource, producingGrant, referenceAttempt, stalePins, submittedBy, writerOriginId, writerVersion } from "./lineage.mjs";
 import { publishedComponent } from "./publication.mjs";
+import { writerPublication } from "./origin.mjs";
+import { originalWriters } from "./ancestry.mjs";
 import { effectAt } from "./revision.mjs";
 import { touchesCut } from "./transfer.mjs";
 import { covers, digest, fail, fields, name, record, relative, roots } from "./values.mjs";
@@ -34,7 +36,9 @@ function sourceFor(run,consumer,p,file,immutable=false) {
 	if(immutable && (!pin || !run.inspections || p.state!=="qualified" || !published || run.products.at(-1)?.outputs[p.grain.id]!==pin))return;
 	if(pin && (!published || p.candidate!==pin) || !published &&
 		(p.state!=="writing" || p.check || p.candidate || p.token!==w.token || w.finished))return;
-	const s={grain:p.grain.id,assignment:w.id,review:p.review,worker:p.worker,generation:p.generation,grant:writerVersion(p),file,
+	if(w.writing && (w.writing.base!==p.base || w.writing.terms!==digest(p.grain) ||
+		digest(Object.fromEntries(Object.entries(w.writing.inputs).map(([id,v])=>[id,v.revision])))!==digest(p.inputs??{})))return;
+	const s={grain:p.grain.id,assignment:w.id,review:p.review,worker:p.worker,generation:p.generation,grant:w.writing?writerOriginId(run,w):writerVersion(p),file,
 		revision:published?/** @type {string} */(p.candidate):p.generation,...(published && {component:c.id})};
 	if(sourceBinding(run,s))return s;
 }
@@ -92,10 +96,13 @@ const request=n=>digest([writerVersion(n),missingInput(n),
  * @param {Run} run @param {Source} s */
 export function sourceBinding(run,s){
 	const origin=producingGrant(run,effectAt(run,s.assignment));
-	if(!origin || origin.review.id!==s.review || origin.writer.grain!==s.grain || origin.worker!==s.worker || origin.generation!==s.generation)return false;
+	if(!origin || origin.review.id!==s.review || origin.writer.grain!==s.grain || origin.worker!==s.worker || origin.generation!==s.generation ||
+		origin.writer.writing && s.grant!==writerOriginId(run,origin.writer))return false;
 	const g=origin.output,scope=typeof g==="string" ? origin.writer.finished?.directory??run.nodes[g]?.grain.directory : g.directory;
 	if(!scope || !covers(scope,s.file))return false;
 	if(!s.component)return s.revision===s.generation;
+	if(origin.writer.writing)return writerPublication(run,s.component,s.grain,s.revision,
+		run.historicalPrefix?.length?originalWriters(run,[origin.writer.id]):undefined)?.writer.writer.id===origin.writer.id;
 	const seen=publishedComponent(run,s.component,s.grain,s.revision),c=seen?.component;
 	return !!c && submittedBy(c,origin) && origin.at<run.effects.indexOf(c);
 }

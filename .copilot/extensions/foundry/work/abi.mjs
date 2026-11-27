@@ -1,5 +1,7 @@
 import { fileURLToPath } from "node:url";
+import { closedAttempt } from "./requirements.mjs";
 import { digest, fail } from "./values.mjs";
+import { revisionLookup } from "./revision.mjs";
 
 /** @typedef {import("./model.js").NativeCall} Check */
 const runner=fileURLToPath(new URL("./runner.mjs",import.meta.url));
@@ -17,15 +19,40 @@ export function runnerRun(a){
 	if(!m || a.shellId!==`foundry-${m[4]}`)fail("unreserved_call","Malformed or unmatched Foundry runner call");
 	return m[3];
 }
+/** One scan per census rather than one full scan for each historical slot. A
+ * repeated identity points to neither contender. Only frozen revisions may reuse it. */
+export const runnerIndex=revisionLookup(run=>{
+	/** @type {Map<string,import("./model.js").Effect|null>} */ const shells=new Map(),calls=new Map();
+	for(const e of run.effects){
+		const shell=e.args.shellId;
+		if(typeof shell==="string")shells.set(shell,shells.has(shell)?null:e);
+		if(e.callId){const id=JSON.stringify([e.issuer,e.callId]);calls.set(id,calls.has(id)?null:e);}
+	}
+	return (/** @type {Check} */ e)=>typeof e.args.shellId==="string" && shells.get(e.args.shellId)===e &&
+		(!e.callId || calls.get(JSON.stringify([e.issuer,e.callId]))===e);
+});
+/** Decode only the complete original ABI, never a path parsed from arbitrary shell input.
+ * @param {import("./model.js").Run} r @param {Check} e @param {ReturnType<typeof runnerIndex>} [unique] */
+export function runnerBinding(r,e,unique=runnerIndex(r)){
+	const m=typeof e.args.command==="string" && abi.exec(e.args.command);
+	if(!m || typeof e.args.description!=="string" || !m[1].startsWith("/") || !m[2].startsWith("/") || !unique(e))return;
+	const entry=m[1].replaceAll("'\\''","'"),cwd=m[2].replaceAll("'\\''","'");
+	if(digest(e.args)===digest(runnerArgs(cwd,r.id,e.id,e.args.description,entry)))return {cwd,entry};
+}
 /** @param {import("./model.js").Run} r @param {Check} e @param {string} cwd @param {boolean} [local] */
 export function exactRunner(r,e,cwd,local=true){
-	const m=typeof e.args.command==="string" && abi.exec(e.args.command);
-	if(!m || typeof e.args.description!=="string" || !m[1].startsWith("/") ||
-		r.effects.some(x=>x!==e && (x.args.shellId===e.args.shellId || e.callId && x.callId===e.callId && x.issuer===e.issuer)))return false;
-	const entry=m[1].replaceAll("'\\''","'");
-	return (!local || entry===runner) && digest(e.args)===digest(runnerArgs(cwd,r.id,e.id,e.args.description,entry));
+	const b=runnerBinding(r,e);
+	return !!b && b.cwd===cwd && (!local || b.entry===runner);
 }
 export const closureExit=78;
+/** No historical or unknown check declares current execution authority. The current
+ * grant implementation must supply a positive closed-format check here before enabling
+ * a new shell reservation. Non-check calls retain their own normal admission checks.
+ * @param {import("./model.js").Effect} e */
+export const supportedNewCall=e=>e.tool!=="bash" || closedAttempt(e);
+/** Exact native request identity, including the run and runner path in the original argv.
+ * @param {import("./model.js").Effect} e */
+export const callBinding=e=>digest([e.id,e.issuer,e.callId??null,e.tool,e.args]);
 /** An original and its linked successor share this obligation. The signer separately binds
  * each attempt's identity, arguments and physical description. Delivery history is not an input.
  * @param {Check} e */
@@ -38,24 +65,4 @@ export function attemptSubject(e){
 export function batchMembers(calls){
 	const next=new Map(calls.flatMap(c=>c.attempt?.version===2 && c.attempt.previous?[[c.attempt.previous,c]]:[]));
 	return next.size?calls.filter(c=>!(c.attempt?.version===2 && c.attempt.previous)).map(c=>next.get(c.id)??c):calls;
-}
-/** @param {Check} e */
-export function legacyWait(e){
-	if(e.attempt?.version!==1 || e.receipt || e.runnerStarted || ["retired","withdrawn","refused"].includes(e.state))return;
-	if(e.attempt.closure==="closed-before-runner-claim")return e.state==="done"?"closed; waiting for a provable current obligation":
-		"closed-before-runner-claim; waiting for the original native settlement";
-	if(e.attempt.closure==="never-issued")return "closed as unissued; waiting for provable inputs and the original issuer";
-	if(e.state==="ready")return "waiting for the original issuer and provable, never-issued inputs";
-	if(e.state==="ordinary" || e.state==="issued" || e.state==="uncertain")return "waiting for the original native call; absence is not permission to replay";
-}
-/** @param {Check} e */
-export const attachedLegacy=e=>e.tool==="bash" && e.attempt?.version===1 && !!e.callId && !e.runnerStarted && !e.runnerClaim && !e.receipt &&
-	(e.state==="issued" || e.state==="uncertain");
-/** Close inside the original SQLite claim lock. The caller reports a refusal
- * only after commit; no signer, preparation or evaluation takes place.
- * @param {import("./model.js").Run} r @param {Check} e @param {string} cwd */
-export function closeLegacy(r,e,cwd){
-	if(e.attempt?.version!==1 || !attachedLegacy(e) || !exactRunner(r,e,cwd))
-		fail("unissued_check","Historical check has no exclusive unclaimed slot for this command");
-	e.attempt.closure="closed-before-runner-claim";
 }

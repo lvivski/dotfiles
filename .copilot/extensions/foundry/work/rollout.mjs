@@ -8,6 +8,7 @@ import { adoptedStop, changeOffer, checkReceipt } from "./evidence.mjs";
 import { admitted, current } from "./native.mjs";
 import { checked, dependencies } from "./lineage.mjs";
 import { publishedComponent } from "./publication.mjs";
+import { memberApproval } from "./receipt.mjs";
 import { changedFiles, commitAt, git, outside, rolloutFiles, stageHarness, stagePatch, treeOf, verifyContracts } from "./product.mjs";
 import { grant } from "./transfer.mjs";
 import { digest, fail, fields, name } from "./values.mjs";
@@ -73,7 +74,7 @@ export function rolloutPlan(cwd,run,actor,from,failed,blob,verify){
 	admitted(run);
 	const target=commitAt(cwd,run.policy.target),stop=run.effects.find(c=>c.id===failed);
 	const ref=correctionRefs(run).find(ref=>ref.base===target && ref.blob===blob && !ref.evaluation && (!ref.assembly || ref.assembly===from) && matchesDraft(ref,failed,from));
-	const parent=stop?.kind==="component" && stop.rollout?changeOffer(run,stop):undefined;
+	const parent=stop?.kind==="component" && memberApproval(stop)?changeOffer(run,stop):undefined;
 	const witness=stop && checkReceipt(stop)?.exit;
 	const cut=parent && stoppedBatch(run,parent,failed,false,ref?.assembly===from);
 	if(parent && (!cut || !run.join || !parent.rollout || parent.assembly!==from || !cut.every(c=>currentRollout(run,c)) ||

@@ -81,7 +81,7 @@ export function inspectComponent(run,node,c,issuer,overrides={}){
 /** Progress only the ordered component obligations of an already-authorized grant. A missing
  * member, a failed check, and a bound review finding have different consequences for its owner.
  * @param {Run} run @param {string} assembly @param {string[]} members @param {Check[]} checks
- * @param {(()=>void)|undefined} [validate]
+ * @param {((observed:Check[])=>void)|undefined} [validate]
  * @returns {{state:"wait"|"ready"}|{state:"next",index:number}|{state:"failed",check:Check}|{state:"changes",review:Inspection}} */
 export function componentBatch(run,assembly,members,checks,validate){
 	if(!members.length || checks.length>members.length || new Set(members).size!==members.length ||
@@ -91,10 +91,14 @@ export function componentBatch(run,assembly,members,checks,validate){
 	const failed=checks.find(c=>{const r=checkReceipt(c);return c.launcherExit!==undefined || c.state==="refused" || r && r.exit!==0;});
 	if(failed)return {state:"failed",check:failed};
 	if(run.effects.some(e=>e.permissionHold))return {state:"wait"};
-	if(checks.some((c,i)=>!observedComponent(c,members[i],assembly)))return {state:"wait"};
-	if(checks.length<members.length)return {state:"next",index:checks.length};
-	validate?.();
-	for(const c of run.inspections===undefined?[]:checks){
+	const observed=checks.filter((c,i)=>observedComponent(c,members[i],assembly));
+	if(observed.length===checks.length && checks.length<members.length)return {state:"next",index:checks.length};
+	const complete=observed.length===members.length;
+	const required=new Set(checks.flatMap(c=>c.attempt?.version===3?c.attempt.facts.flatMap(f=>f.kind==="publication"?[f.component]:[]):[]));
+	const due=complete?checks:observed.filter(c=>required.has(c.id));
+	if(!due.length)return {state:"wait"};
+	validate?.(due);
+	for(const c of run.inspections===undefined?[]:due){
 		const binding=reviewBinding(run,c) ?? fail("stale_assignment","The signed component no longer matches its approved publication grant");
 		const i=inspectComponent(run,binding.node,c,run.owner,binding.overrides);
 		if(!i || i.issuer!==run.owner)return {state:"wait"};
@@ -102,7 +106,7 @@ export function componentBatch(run,assembly,members,checks,validate){
 		if(verdict==="changes")return {state:"changes",review:i};
 		if(verdict!=="approved")return {state:"wait"};
 	}
-	return {state:"ready"};
+	return {state:complete?"ready":"wait"};
 }
 
 /** @param {Inspection} i */

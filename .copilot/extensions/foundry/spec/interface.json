@@ -2477,6 +2477,15 @@
             },
             {
               "on": "planned",
+              "target": "done",
+              "description": "Read the committed historical closures before deciding whether the original issuer can reserve fresh work.",
+              "when": [
+                "fenced"
+              ],
+              "action": "refill"
+            },
+            {
+              "on": "planned",
               "target": "publication",
               "description": "Recheck permission before applying independent review evidence to the graph.",
               "when": [
@@ -2574,6 +2583,15 @@
               "when": [
                 "closed"
               ]
+            },
+            {
+              "on": "planned",
+              "target": "done",
+              "description": "Read the committed historical closures before deciding whether the original issuer can reserve fresh work.",
+              "when": [
+                "fenced"
+              ],
+              "action": "refill"
             },
             {
               "on": "planned",
@@ -3542,6 +3560,12 @@
               ],
               "action": "draft",
               "description": "Send a signed adopted stop to its bounded included source without asking the owner to write a patch."
+            },
+            {
+              "on": "approved-members",
+              "action": "source-member",
+              "description": "Check each admitted member against its own original reviewed output. Exact byte approval, predecessor checks and final review remain mandatory.",
+              "requires": []
             }
           ]
         },

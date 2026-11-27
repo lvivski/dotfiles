@@ -1,5 +1,6 @@
 import { deliveryInspection } from "./batch.mjs";
 import { rolloutInspection } from "./campaign.mjs";
+import { approvalId } from "./approved.mjs";
 import { observedComponent } from "./publication.mjs";
 import { remedyInspection } from "./remedy.mjs";
 import { replacementInspection } from "./replacement.mjs";
@@ -46,7 +47,7 @@ export function reviewBinding(run,c,ordinary){
 	if(c.delivery)return deliveryInspection(run,c);
 	if(c.remedy)return remedyInspection(run,c);
 	if(c.replacement)return replacementInspection(run,c);
-	if(c.rollout)return rolloutInspection(run,c);
+	if(c.rollout || approvalId(c))return rolloutInspection(run,c);
 	if(ordinary?.state==="reviewing" && ordinary.check===c.id && ordinary.candidate===c.commit)return {node:ordinary,overrides:{}};
 }
 

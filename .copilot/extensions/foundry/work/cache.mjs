@@ -1,9 +1,9 @@
 import { lstatSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { hostname, release, tmpdir } from "node:os";
 import path from "node:path";
-import { verifyPreparation } from "./outcomes.mjs";
+import { verifyPreparation } from "./seals.mjs";
 import { copyPrepared } from "./preparation.mjs";
-import { artifactDigest } from "./product.mjs";
+import { artifactDigest } from "../../../skills/foundry/scripts/git-files.mjs";
 import { digest, fail, FoundryError } from "./values.mjs";
 
 /** @typedef {{ledger:string,run:string,group:string,effect:string,prior:{id:string,claim:string}[],

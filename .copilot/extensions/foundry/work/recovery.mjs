@@ -1,7 +1,18 @@
 import { indexBudgetError } from "./pages.mjs";
+import { callBinding } from "./abi.mjs";
 import { digest, fail, record, text } from "./values.mjs";
 
 /** @typedef {import("./model.js").Effect} Effect */
+/** @typedef {NonNullable<import("./model.js").HistoricalSlot["settlement"]>} Settlement */
+/** Only a positively matched primary history pair, never the shape of a post-hook
+ * acknowledgement, can settle a historical shell. Do not persist this process capability.
+ * @type {WeakMap<object,{binding:string,value:Settlement}>} */
+const shellResults=new WeakMap();
+/** @param {Effect} e @param {unknown} raw */
+export function shellSettlement(e,raw){
+	const found=raw!==null && typeof raw==="object"?shellResults.get(raw):undefined;
+	if(found && found.binding===callBinding(e))return found.value;
+}
 /** @typedef {Parameters<import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]>[0]} Page */
 /** @typedef {import("@github/copilot-sdk").CopilotSession["rpc"]["eventLog"]["read"]} Reader */
 /** @param {Reader} read @param {NonNullable<Page["types"]>} types */
@@ -134,11 +145,11 @@ export async function recoveredCalls(read,effects,publish) {
 			const t=typeof d.toolCallId==="string" && active.get(d.toolCallId);if(!t)continue;
 			if(refusedCall(e)===d.toolCallId)t.denied=true;
 			if (e.type === "tool.execution_start") {
-				if(t.start && t.start.id!==e.id)t.error=new Error("Ambiguous native start");
+				if(t.start && (t.start.id!==e.id || digest(t.start.data)!==digest(d)))t.error=new Error("Ambiguous native start");
 				t.start=e;
 			}
 			if (e.type === "tool.execution_complete") {
-				if(t.start || t.end && t.end.id!==e.id)t.error=new Error("Conflicting or out-of-order native completion");
+				if(t.start || t.end && (t.end.id!==e.id || digest(t.end.data)!==digest(d)))t.error=new Error("Conflicting or out-of-order native completion");
 				t.end=e;
 			}
 		}
@@ -150,7 +161,7 @@ export async function recoveredCalls(read,effects,publish) {
 	}}catch(e){for(const t of active.values())publish(t.effect,e);return;}
 	for(const [id,t] of active)finish(id,t);
 }
-/** @param {Trace} trace */
+/** @param {Trace} trace @returns {{resultType:string,toolTelemetry?:unknown,structuredContent?:unknown,textResultForLlm?:unknown}} */
 function matched({effect,start,end,denied}){
 	if (start && (end || denied)) {
 		const a = record(start.data), b = end && record(end.data);
@@ -159,10 +170,22 @@ function matched({effect,start,end,denied}){
 			fail("native_receipt_mismatch", "No matching original native completion");
 		if (denied) {
 			if (b?.success === true) fail("ambiguous_receipt", "Conflicting native permission and completion receipts");
-			return { resultType: "denied" };
+			const result={ resultType: "denied" };
+			if(effect.tool==="bash")shellResults.set(result,{binding:callBinding(effect),value:{kind:"declined"}});
+			return result;
+		}
+		if(effect.tool==="bash" && b && typeof b.success==="boolean"){
+			const result={resultType:b.success?"success":"failure",toolTelemetry:b.toolTelemetry};
+			const telemetry=record(b.toolTelemetry??{}),p=record(telemetry.properties??{}),exit=record(telemetry.metrics??{}).exit_code;
+			if((a.toolName==="bash" || a.toolName==="functions.bash") && (b.error==null || record(b.error).code==="command_nonzero_exit") &&
+				p.executionMode==="sync" && typeof exit==="number" && Number.isSafeInteger(exit) && exit>=0 && exit<=255 &&
+				(exit>0?p.shell_error_category==="command_nonzero_exit":b.success && p.shell_error_category==="none") &&
+				typeof a.turnId==="string" && typeof start.id==="string" && typeof end?.id==="string" && start.id!==end.id){
+				const request=callBinding(effect);shellResults.set(result,{binding:request,value:{kind:"terminal",request,turn:a.turnId,start:start.id,end:end.id,exit}});
+			}
+			if(b.success || shellResults.has(result))return result;
 		}
 		if (b?.success === true) {
-			if (effect.tool === "bash") return { resultType: "success", toolTelemetry: b.toolTelemetry };
 			const result = record(b.result);
 			return { resultType: "success", structuredContent: result.structuredContent, textResultForLlm: result.content };
 		}

@@ -60,7 +60,7 @@ async function setup(t,ready=false,deadline){
 	const checks=()=>read().effects.filter(/** @returns {e is Check} */ e=>e.tool==="bash");
 	const e=checks().find(e=>e.kind==="goal")??assert.fail();
 	const original=()=>checks().find(x=>x.id===e.id)??assert.fail();
-	const linked=()=>checks().filter(x=>x.attempt?.version===2 && x.attempt.previous===e.id);
+	const linked=()=>checks().filter(x=>x.attempt?.version===3 && x.attempt.previous===e.id);
 	const host=(/** @type {string} */ action,props={})=>{
 		const proc=spawnSync(process.execPath,[fileURLToPath(new URL("../test/installed-reader.mjs",import.meta.url)),p,f.root],
 			{input:JSON.stringify({action,id:e.id,...props}),encoding:"utf8",cwd:f.root,env:{...process.env,LAUNCH_LOG:log}});
@@ -85,8 +85,8 @@ test("one loaded 95 runner loses the actual same-path preclaim race; only positi
 	}finally{writeFileSync(gate+".continue","");old=await before;}
 	assert.notEqual(old.status,0);assert.match(old.stderr,/Invalid Foundry execution snapshot/);
 	const prior=original();assert.ok(prior.attempt?.version===1);
-	assert.equal(prior.attempt.closure,"closed-before-runner-claim");assert.equal(prior.runnerClaim,undefined);assert.equal(prior.receipt,undefined);
-	assert.equal(launches(),0);assert.equal(document().format,"foundry-run/2");
+	assert.deepEqual(prior,e);assert.equal(read().history?.[e.id]?.closure,"closed-before-runner-claim");assert.equal(prior.runnerClaim,undefined);assert.equal(prior.receipt,undefined);
+	assert.equal(launches(),0);assert.equal(document().format,"foundry-run/3");
 	for(const v of [95,80]){
 		deploy(v);for(const action of ["resume","start","status"]){
 			const result=host(action,{params:action==="status"?{run}:{source}});assert.equal(result.ok,false);assert.equal(result.code,"corrupt_run");assert.deepEqual(result.calls,[]);
@@ -100,7 +100,7 @@ test("one loaded 95 runner loses the actual same-path preclaim race; only positi
 	const now=host("turn",{reply:settled});assert.equal(now.ok,true,now.message);
 	const fresh=linked();
 	assert.equal(fresh.length,1);assert.notEqual(fresh[0].callId,e.callId);assert.equal(fresh[0].issuer,e.issuer);
-	assert.equal(fresh[0].attempt?.version,2);assert.equal(fresh[0].receipt?.exit,0);db.verifySigned(run,fresh[0]);
+	assert.equal(fresh[0].attempt?.version,3);assert.equal(fresh[0].receipt?.exit,0);db.verifySigned(run,fresh[0]);
 	assert.ok(now.permissions.some((/** @type {{id:string}} */ p)=>p.id===fresh[0].args.shellId));assert.equal(host("status",{params:{run}}).value.qualified,f.tip);
 	assert.deepEqual(host("turn",{reply:settled}).calls,[]);assert.equal(launches(),1);
 });
@@ -123,10 +123,10 @@ test("a pre-cutover exclusive signer finishes its actual goal through conversion
 });
 
 test("a genuinely unissued legacy reservation closes once and completes the same initial obligation",async t=>{
-	const {f,e,deploy,host,launches,original,linked}=await setup(t,true);assert.equal(e.state,"ready");deploy();
+	const {f,e,deploy,host,launches,original,linked,read}=await setup(t,true);assert.equal(e.state,"ready");deploy();
 	const next=host("turn");assert.equal(next.ok,true,next.message);
 	const prior=original(),fresh=linked();assert.ok(prior.attempt?.version===1);
-	assert.equal(prior.attempt.closure,"never-issued",JSON.stringify(next));assert.equal(prior.callId,undefined);assert.equal(prior.runnerClaim,undefined);
+	assert.deepEqual(prior,e);assert.equal(read().history?.[e.id]?.closure,"never-issued",JSON.stringify(next));assert.equal(prior.callId,undefined);assert.equal(prior.runnerClaim,undefined);
 	assert.equal(fresh.length,1);assert.equal(fresh[0].receipt?.exit,0);assert.equal(launches(),1);
 	assert.equal(host("status",{params:{run}}).value.qualified,f.tip);
 });
@@ -150,7 +150,7 @@ test("an actual old local permission hold stays attached until that issuer can a
 
 for(const reason of ["unknown","declined","expired","paused"])test(`the original ${reason} call cannot authorize a fresh attempt`,async t=>{
 	const deadline=new Date(Date.now()+3_600_000).toISOString();
-	const {f,e,deploy,host,original,linked,launches}=await setup(t,false,deadline);deploy();
+	const {f,e,deploy,host,original,linked,launches,read}=await setup(t,false,deadline);deploy();
 	if(reason==="unknown"){
 		// A terminal-looking reply without a runner closure is not proof.
 		assert.deepEqual(host("turn",{reply:settled}).calls,[]);
@@ -161,7 +161,7 @@ for(const reason of ["unknown","declined","expired","paused"])test(`the original
 		const result=host("turn",{reply:reason==="declined"?{resultType:"denied"}:settled,
 			...(reason==="expired"&&{now:Date.parse(deadline)+1})});
 		assert.equal(result.ok,true,result.message);assert.deepEqual(result.calls,[]);
-		if(reason==="declined")assert.equal(original().state,"refused");
+		if(reason==="declined"){assert.deepEqual(original(),e);assert.equal(read().history?.[e.id]?.settlement?.kind,"declined");}
 	}
 	assert.equal(original().runnerClaim,undefined);assert.equal(original().receipt,undefined);
 	assert.equal(linked().length,0);assert.equal(launches(),0);

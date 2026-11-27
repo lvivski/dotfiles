@@ -5,6 +5,7 @@ const go=(on,target,why,...when)=>({...to(on,target,why),when});
 /** @param {string} on @param {string} target @param {string} action @param {string} why @param {...string} when */
 const act=(on,target,action,why,...when)=>({...go(on,target,why,...when),action});
 const closedPlan=go("planned","done","The issuer closed during planning; do not install observers or dispatch.","closed");
+const fencedPlan=act("planned","done","refill","Read the committed historical closures before deciding whether the original issuer can reserve fresh work.","fenced");
 const reviewPlan=act("planned","publication","sample-policy","Recheck permission before applying independent review evidence to the graph.","inspectionDue");
 const watchPlan=act("planned","offering","watch-plan","Observe the committed plan and choose this issuer's outstanding work.");
 const wakeLanes=Object.freeze(["history","dispatch"]);
@@ -36,7 +37,7 @@ export const reconciliation=machine("reconciliation","idle",{
 		go("completion","history","An unconfirmed original keeps its reservation and cannot free a slot."),
 		go("drained","done","All requested original-call reads for this pass have returned."),
 	],
-	planning:[closedPlan,reviewPlan,
+	planning:[closedPlan,fencedPlan,reviewPlan,
 		act("planned","renewal","sample-policy","Sample fresh permission before renewing a report or reissuing a writer whose requested input arrived.","!missingTarget","owner","active","!expired","renewalDue"),
 		watchPlan],
 	publication:[
@@ -50,7 +51,7 @@ export const reconciliation=machine("reconciliation","idle",{
 		act("policy","renewing","renew","Replan the same run and revalidate its original report or exact input request.","permitted"),
 		act("policy","offering","watch-held-renewal","Observe the issuer's permission and retain the original renewal."),
 	],
-	renewing:[closedPlan,reviewPlan,watchPlan],
+	renewing:[closedPlan,fencedPlan,reviewPlan,watchPlan],
 	offering:[
 		go("work","done","Wait for the target to be readable; do not dispatch against a missing ref.","missingTarget"),
 		go("work","done","Keep an inactive run stopped; only its already-qualified handoff can be delivered.","!active","!handoff"),
